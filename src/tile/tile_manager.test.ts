@@ -126,6 +126,22 @@ function addCachedTile(tileManager: TileManager, tileID: OverscaledTileID, state
     return tile;
 }
 
+/**
+ * Creates a tile manager whose z1 tile sits in the out-of-view cache in the given state, and whose
+ * tiles never finish loading.
+ */
+function createTileManagerWithCachedParent(parentState: TileState) {
+    const tileManager = createTileManager();
+    tileManager._source.loadTile = async (tile) => {
+        tile.state = 'loading';
+    };
+    tileManager._outOfViewCache.setMaxSize(10);
+    const parent = new Tile(new OverscaledTileID(1, 0, 1, 0, 0), undefined);
+    parent.state = parentState;
+    tileManager._outOfViewCache.add(parent.tileID, parent);
+    return {tileManager, parent};
+}
+
 type MapOptions = {
     style: StyleSpecification;
 };
@@ -1668,6 +1684,32 @@ describe('TileManager._updateRetainedTiles', () => {
 
     });
 
+    test('retains a loaded parent from the out-of-view cache while the ideal tile loads', () => {
+        const {tileManager, parent} = createTileManagerWithCachedParent('loaded');
+        const idealTile = new OverscaledTileID(2, 0, 2, 0, 0);
+
+        const retained = tileManager._updateRetainedTiles([idealTile], 2);
+
+        expect(retained).toEqual({[idealTile.key]: idealTile, [parent.tileID.key]: parent.tileID});
+    });
+
+    test('moves a loaded parent from the out-of-view cache back into view while the ideal tile loads', () => {
+        const {tileManager, parent} = createTileManagerWithCachedParent('loaded');
+
+        tileManager._updateRetainedTiles([new OverscaledTileID(2, 0, 2, 0, 0)], 2);
+
+        expect(tileManager.getTile(parent.tileID)).toBe(parent);
+    });
+
+    test('does not retain a parent from the out-of-view cache that has no data', () => {
+        const {tileManager} = createTileManagerWithCachedParent('unloaded');
+        const idealTile = new OverscaledTileID(2, 0, 2, 0, 0);
+
+        const retained = tileManager._updateRetainedTiles([idealTile], 2);
+
+        expect(retained).toEqual({[idealTile.key]: idealTile});
+    });
+
     test('don\'t use tiles below minzoom', () => {
         const tileManager = createTileManager({minzoom: 2});
         tileManager._source.loadTile = async (tile) => {
@@ -2015,6 +2057,22 @@ describe('TileManager._updateRetainedTiles', () => {
 
         expect(retained[children[0].key]).toBeUndefined();
         expect(getTileSpy.mock.calls.map((c) => c[0])).toContainEqual(new OverscaledTileID(0, 1, 0, 0, 0));
+    });
+
+    test('retains a cached parent under cached children that cover only part of the ideal tile', () => {
+        const tileManager = createTileManager();
+        tileManager._source.loadTile = async (tile) => {
+            tile.state = 'loading';
+        };
+        const idealTile = new OverscaledTileID(2, 0, 2, 0, 0);
+        const cachedChild = idealTile.children(14)[0];
+        const cachedParent = idealTile.scaledTo(1);
+        addCachedTile(tileManager, cachedChild);
+        addCachedTile(tileManager, cachedParent);
+
+        const retained = tileManager._updateRetainedTiles([idealTile], 2);
+
+        expect(Object.keys(retained).sort()).toEqual([idealTile, cachedChild, cachedParent].map(id => id.key).sort());
     });
 
     test('does not replace a partial generation in view with a shallower cached one', () => {
